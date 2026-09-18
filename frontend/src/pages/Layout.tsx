@@ -14,12 +14,13 @@ import {
   UnstyledButton,
 } from "@mantine/core";
 import { Link, NavLink as RRNavLink, Outlet, useLocation } from "react-router-dom";
-import { Activity, Bot, ChevronLeft, ChevronRight, FlaskConical, Settings, Sparkles } from "lucide-react";
+import { Activity, Bot, ChevronLeft, ChevronRight, FlaskConical, Settings, Sparkles, RadioTower } from "lucide-react";
 
 const NAV_ITEMS = [
   { to: "/", label: "Performance", icon: <Activity size={18} /> },
   { to: "/signals", label: "Signals", icon: <Sparkles size={18} /> },
   { to: "/backtest", label: "Backtest", icon: <FlaskConical size={18} /> },
+  { to: "/autopilot", label: "Autopilot", icon: <RadioTower size={18} /> },
   { to: "/dexter", label: "Dexter", icon: <Bot size={18} /> },
   { to: "/settings", label: "Settings", icon: <Settings size={18} /> },
 ];

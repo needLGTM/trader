@@ -52,11 +52,12 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from app.db import init_db, get_session
-from app.models import Execution, Order, PnL, Position, Signal
+from app.models import AuditEvent, Execution, Order, PnL, Position, Signal
 from app.config import settings
 from app.schemas import SignalIn, ExtractedSignal
 from app.utils import naive_extract
 from app.risk import risk_guard
+from app import automation
 from app.state_sync import sync_executions, sync_orders, sync_positions, sync_pnl, sync_trading_state
 from app.cookie_store import save_cookies, load_cookies, get_version
 from llm.base import LLM
@@ -299,6 +300,85 @@ def patch_trading_settings(payload: TradingSettingsPatch):
             _rt[bool_key] = val
     _save_rt()
     return _build_trading_settings()
+
+
+# ── Strategy Autopilot / Risk Controls ───────────────────────────────────────
+
+class AutopilotPatch(BaseModel):
+    enabled: bool | None = None
+    broker_env: str | None = None
+    allocation_method: str | None = None
+    strategies: dict[str, bool] | None = None
+    symbols: dict[str, list[str]] | None = None
+
+
+class KillSwitchIn(BaseModel):
+    confirmation: str
+    flatten_positions: bool = False
+    reason: str = "manual"
+
+
+@app.get("/strategies")
+def list_strategies():
+    return automation.strategy_catalog()
+
+
+@app.get("/autopilot")
+def get_autopilot():
+    return automation.state()
+
+
+@app.patch("/autopilot")
+def patch_autopilot(payload: AutopilotPatch):
+    try:
+        return automation.configure(payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/autopilot/run")
+def run_autopilot(strategy_id: str | None = None):
+    """Run enabled strategies once. The scheduler uses this endpoint as well."""
+    return {"results": automation.run(strategy_id)}
+
+
+@app.get("/risk/status")
+def risk_status(broker_env: str = "SIMULATE"):
+    return risk_guard.status(broker_env.upper())
+
+
+@app.post("/risk/kill-switch")
+def trigger_kill_switch(payload: KillSwitchIn):
+    if payload.confirmation != "HALT TRADING":
+        raise HTTPException(status_code=422, detail="confirmation must be HALT TRADING")
+    state = risk_guard.set_halted(True, payload.reason)
+    # Cancelling outstanding orders is always safe. Flattening is an explicit,
+    # separate opt-in because it sends market orders.
+    current = automation.state()
+    broker = get_broker(broker_env=str(current["broker_env"]))
+    broker.cancel_all()
+    flattened: list[str] = []
+    if payload.flatten_positions:
+        for ticker, position in broker.positions().items():
+            qty = abs(float(position.get("qty", 0)))
+            if qty:
+                side = "SELL" if float(position["qty"]) > 0 else "BUY"
+                broker.place_order(ticker, side, qty, order_type="MARKET", tif="DAY")
+                flattened.append(ticker)
+    automation.audit("risk.kill_switch", "Kill switch activated", {"flattened": flattened})
+    return {"risk": state, "flattened": flattened}
+
+
+@app.post("/risk/resume")
+def resume_trading(confirmation: str):
+    if confirmation != "RESUME TRADING":
+        raise HTTPException(status_code=422, detail="confirmation must be RESUME TRADING")
+    return risk_guard.set_halted(False, "manual resume")
+
+
+@app.get("/audit")
+def list_audit(limit: int = Query(default=100, ge=1, le=500)):
+    return automation.recent_audit(limit)
 
 
 # ── OpenD Management ───────────────────────────────

@@ -149,6 +149,27 @@ BROKER_ENV=SIMULATE
 
 ---
 
+## Strategy Autopilot（既定で停止・ペーパー取引）
+
+SNSシグナルとは別に、保存済み `MarketBar` を対象として SMA モメンタム、RSI 平均回帰、20日ブレイクアウトを実行できる。戦略は注文を直接発行せず、必ずバックエンドのリスクチェックを通る。
+
+```bash
+STRATEGY_INTERVAL_MINUTES=60
+STRATEGY_ORDER_USD=200
+STRATEGY_INITIAL_EQUITY=10000
+MAX_OPEN_POSITIONS=5
+MAX_DAILY_LOSS=500
+MAX_DRAWDOWN_PCT=10
+```
+
+`GET/PATCH /autopilot` で戦略と銘柄を設定し、`POST /autopilot/run` で一回実行する。初期値は `enabled: false`、`broker_env: SIMULATE`。
+
+`POST /risk/kill-switch` は `confirmation: "HALT TRADING"` を必須とし、全注文を取り消して以降の自動戦略注文を停止する。`flatten_positions: true` は明示時だけ成行でポジションを閉じる。
+
+自動戦略を REAL で有効にする場合も、UI/API の切替だけでは不可能で、サーバー上に `STRATEGY_LIVE_CONFIRMED=true` を設定する必要がある。まずは十分なバックテストとペーパー運用を行ってから設定すること。
+
+---
+
 ## バックテスト
 
 Signals 画面で記録されたシグナルを yfinance の実データでシミュレートできる。

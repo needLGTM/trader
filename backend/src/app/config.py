@@ -21,6 +21,12 @@ class Settings(BaseModel):
     max_position_per_ticker: int = int(os.getenv("MAX_POSITION_PER_TICKER", "2"))
     default_order_usd: float = float(os.getenv("DEFAULT_ORDER_USD", "200"))
     max_price_deviation_pct: float = float(os.getenv("MAX_PRICE_DEVIATION_PCT", "2.0"))
+    strategy_order_usd: float = float(os.getenv("STRATEGY_ORDER_USD", "200"))
+    strategy_live_confirmed: bool = os.getenv("STRATEGY_LIVE_CONFIRMED", "false").lower() == "true"
+    max_daily_loss_pct: float = float(os.getenv("MAX_DAILY_LOSS_PCT", "3.0"))
+    max_drawdown_pct: float = float(os.getenv("MAX_DRAWDOWN_PCT", "10.0"))
+    max_open_positions: int = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
+    strategy_initial_equity: float = float(os.getenv("STRATEGY_INITIAL_EQUITY", "10000"))
     market: str = os.getenv("MARKET", "US")
 
     # 自動取引設定

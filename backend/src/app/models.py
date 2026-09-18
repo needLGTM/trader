@@ -78,3 +78,12 @@ class MarketBar(SQLModel, table=True):
     low: float
     close: float
     volume: float
+
+
+class AuditEvent(SQLModel, table=True):
+    """Append-only journal for configuration, risk decisions, and orders."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    event_type: str
+    message: str
+    data: str = "{}"
+    created_at: datetime = Field(default_factory=datetime.utcnow)

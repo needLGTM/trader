@@ -11,6 +11,7 @@ import { PerformancePage } from "./pages/Performance";
 import { BacktestPage } from "./pages/Backtest";
 import { DexterPage } from "./pages/Dexter";
 import { SettingsPage } from "./pages/Settings";
+import { AutopilotPage } from "./pages/Autopilot";
 
 const theme = createTheme({
   primaryColor: "blue",
@@ -38,6 +39,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
             <Route path="/performance" element={<PerformancePage />} />
 
             <Route path="/backtest" element={<BacktestPage />} />
+            <Route path="/autopilot" element={<AutopilotPage />} />
             <Route path="/dexter" element={<DexterPage />} />
             <Route path="/settings" element={<SettingsPage />} />
 
@@ -49,4 +51,3 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     </MantineProvider>
   </React.StrictMode>,
 );
-
