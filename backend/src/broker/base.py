@@ -15,6 +15,7 @@ class Broker(ABC):
         price: Optional[float] = None,
         order_type: str = "LIMIT",
         tif: str = "DAY",
+        acc_type: Optional[str] = None,
     ) -> dict:
         ...
 

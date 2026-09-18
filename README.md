@@ -92,6 +92,39 @@ docker compose up -d
 docker compose --profile moomoo up -d
 ```
 
+### 自動起動
+
+通常の起動・停止：
+
+```bash
+docker compose --profile moomoo up -d
+docker compose --profile moomoo stop
+```
+
+Dockerデーモン再起動後も各コンテナは `unless-stopped` で復帰します。ホスト起動時にもComposeを起動する場合：
+
+Linuxでsystemdが動いている環境：
+
+```bash
+sudo cp trader-compose.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now trader-compose.service
+```
+
+状態確認：
+
+```bash
+docker compose ps
+sudo systemctl status trader-compose.service
+```
+
+WSL（systemd未有効）の場合は `systemctl` を使わず、Docker Desktopの `Start Docker Desktop when you sign in` を有効にしてください。Docker Desktop起動後、`restart: unless-stopped` のコンテナは自動復帰します。手動起動・停止は以下です。
+
+```bash
+docker compose --profile moomoo up -d
+docker compose --profile moomoo stop
+```
+
 詳細な設定は [backend/README.md](backend/README.md) を参照。
 
 ---

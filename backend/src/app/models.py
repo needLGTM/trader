@@ -5,7 +5,7 @@ from datetime import datetime
 
 class Signal(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    message_id: str
+    message_id: str = Field(unique=True, index=True)
     author: str
     channel_id: int
     content: str
@@ -31,9 +31,25 @@ class Order(SQLModel, table=True):
     side: str # BUY/SELL
     qty: float
     price: float | None = None
-    status: str = "NEW" # NEW/FILLED/CANCELED/REJECTED
+    status: str = "PENDING" # PENDING/EXECUTING/SUBMITTED/FILLED/UNKNOWN/CANCELED/REJECTED
     reason: str | None = None
     signal_id: int | None = None
+    order_type: str = "LIMIT"
+    tif: str = "DAY"
+    acc_type: str | None = None
+    attempts: int = 0
+    submitted_at: datetime | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class RiskReservation(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    order_id: int = Field(index=True)
+    ticker: str = Field(index=True)
+    broker_env: str = Field(default="SIMULATE", index=True)
+    acc_type: str = Field(default="MARGIN", index=True)
+    qty: float
+    status: str = Field(default="RESERVED", index=True)  # RESERVED/RELEASED/CONSUMED
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

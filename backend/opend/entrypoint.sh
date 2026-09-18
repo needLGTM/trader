@@ -63,6 +63,23 @@ FIFO=/tmp/opend_input
 rm -f "$FIFO"
 mkfifo "$FIFO"
 
+# backendは共有ボリューム上の制御ファイルへ書き込み、ここでOpenDのFIFOへ中継する。
+CONTROL_FILE="${OPEND_CONTROL_PATH:-/root/.com.moomoo.OpenD/opend_input}"
+mkdir -p "$(dirname "$CONTROL_FILE")"
+rm -f "$CONTROL_FILE"
+
+(
+	while true; do
+		if [ -s "$CONTROL_FILE" ]; then
+			cat "$CONTROL_FILE" >&3
+			rm -f "$CONTROL_FILE"
+		else
+			sleep 0.2
+		fi
+	done
+) &
+_control_pid=$!
+
 # FIFO を read/write で開いて、OpenD 側と中継側のどちらもブロックしにくくする。
 exec 3<>"$FIFO"
 
@@ -77,3 +94,4 @@ if [ -n "${MOOMOO_PIC_VERIFY_CODE:-}" ]; then
 fi
 
 wait "$_open_pid"
+kill "$_control_pid" 2>/dev/null || true

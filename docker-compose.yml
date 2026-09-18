@@ -4,6 +4,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: trader-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB: trader
       POSTGRES_USER: trader
@@ -21,6 +22,7 @@ services:
   backend:
     build: ./backend
     container_name: trader-backend
+    restart: unless-stopped
     ports:
       - "8000:8000"
     env_file:
@@ -34,17 +36,19 @@ services:
       MOOMOO_OPEND_PORT: ${MOOMOO_OPEND_PORT:-11111}
       MOOMOO_RSA_PRIVATE_KEY_PATH: ${MOOMOO_RSA_PRIVATE_KEY_PATH:-/app/opend_keys/conn_key.pem}
       COOKIE_STORE_PATH: /app/cookie_data/twitter_cookies.json
+      OPEND_CONTROL_PATH: /mnt/opend_home/opend_input
+      OPEND_LOG_PATH: /mnt/opend_logs
     volumes:
       - backend_data:/app/data
       - ./backend/opend_keys:/app/opend_keys:ro
       - cookie_data:/app/cookie_data
       - /home/daiki/dexter:/home/daiki/dexter
-      - opend_home:/mnt/opend_home:ro  # read captcha image from opend
-      - /var/run/docker.sock:/var/run/docker.sock:ro  # docker exec for captcha submission
+      - opend_home:/mnt/opend_home  # captcha image and OpenD control file
+      - ./backend/opend_data:/mnt/opend_logs:ro
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["sh", "-c", "alembic upgrade head && uvicorn api.main:app --host 0.0.0.0 --port 8000"]
     networks: [trader]
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\""]
@@ -56,6 +60,7 @@ services:
   frontend:
     build: ./frontend
     container_name: trader-frontend
+    restart: unless-stopped
     ports:
       - "80:80"
     depends_on:
@@ -66,6 +71,7 @@ services:
   twitter_worker:
     build: ./backend
     container_name: twitter_worker
+    restart: unless-stopped
     env_file:
       - ./backend/.env
       - ./backend/.env.local
@@ -85,6 +91,7 @@ services:
   dexter_worker:
     build: ./backend
     container_name: dexter_worker
+    restart: unless-stopped
     env_file:
       - ./backend/.env
       - ./backend/.env.local
@@ -103,6 +110,7 @@ services:
   sync_worker:
     build: ./backend
     container_name: sync_worker
+    restart: unless-stopped
     env_file:
       - ./backend/.env
       - ./backend/.env.local
@@ -116,6 +124,24 @@ services:
     volumes:
       - backend_data:/app/data
     command: ["python", "-m", "workers.scheduler"]
+    networks: [trader]
+
+  order_executor:
+    build: ./backend
+    container_name: order_executor
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+      - ./backend/.env.local
+    environment:
+      PYTHONPATH: /app/src
+      TZ: Asia/Tokyo
+      API_BASE_URL: http://backend:8000
+      DATABASE_URL: ${DATABASE_URL:-postgresql://trader:trader@postgres:5432/trader}
+    depends_on:
+      backend:
+        condition: service_healthy
+    command: ["python", "-m", "workers.order_executor"]
     networks: [trader]
 
   # ── moomoo プロファイル（OpenD ゲートウェイ）─────────────
@@ -134,6 +160,7 @@ services:
       MOOMOO_TELNET_IP: 127.0.0.1
       MOOMOO_TELNET_PORT: 22222
       MOOMOO_OPEND_RSA_PRIVATE_KEY_PATH: ${MOOMOO_OPEND_RSA_PRIVATE_KEY_PATH:-/opt/opend/keys/conn_key.pem}
+      OPEND_CONTROL_PATH: /root/.com.moomoo.OpenD/opend_input
     volumes:
       - ./backend/opend_data:/opt/opend/FutuOpenD/Log
       - ./backend/opend_keys:/opt/opend/keys:ro

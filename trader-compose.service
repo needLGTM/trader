@@ -1,0 +1,16 @@
+[Unit]
+Description=Trader Docker Compose application
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/daiki/trader
+ExecStart=/usr/bin/docker compose --profile moomoo up -d
+ExecStop=/usr/bin/docker compose --profile moomoo stop
+RemainAfterExit=yes
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

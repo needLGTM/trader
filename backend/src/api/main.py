@@ -3,7 +3,9 @@ import datetime
 import hashlib
 import json
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Iterable, List
 
@@ -56,12 +58,14 @@ from app.models import Execution, Order, PnL, Position, Signal
 from app.config import settings
 from app.schemas import SignalIn, ExtractedSignal
 from app.utils import naive_extract
-from app.risk import risk_guard
+from app.order_service import enqueue_order
+from app.signal_service import persist_signal
 from app.state_sync import sync_executions, sync_orders, sync_positions, sync_pnl, sync_trading_state
 from app.cookie_store import save_cookies, load_cookies, get_version
 from llm.base import LLM
 from broker import get_broker, reset_broker_cache
 from sqlmodel import select
+from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger("api")
 
@@ -311,7 +315,7 @@ def _opend_api_port() -> int:
     return settings.moomoo_opend_port
 
 
-_OPEND_CONTAINER_NAME = "moomoo-opend"
+_OPEND_LOG_DIR = Path(os.getenv("OPEND_LOG_PATH", "/mnt/opend_logs"))
 
 # Verification state detected from container logs (set by _update_opend_verify_state)
 _opend_verify_state: dict = {"type": None, "updated_at": None}  # type: "captcha"|"sms"|None
@@ -326,33 +330,28 @@ def _find_captcha_image() -> Path | None:
 
 
 def _opend_verify_type(connected: bool) -> str | None:
-    """Detect what verification OpenD is waiting for by checking recent container logs."""
+    """Detect what verification OpenD is waiting for from shared files."""
     if connected:
         return None
+    log_text = ""
     try:
-        import docker as _docker
-        client = _docker.from_env()
-        container = client.containers.get(_OPEND_CONTAINER_NAME)
-        container.reload()
-        if container.status != "running":
-            return None
-        # Last 50 lines of logs is enough to detect current state
-        logs = container.logs(tail=50).decode(errors="replace")
-        if "SMS verification code required" in logs or "req_phone_verify_code" in logs:
-            # Only SMS-pending if no login success after the last SMS request
-            lines = logs.splitlines()
-            sms_idx = max((i for i, l in enumerate(lines) if "req_phone_verify_code" in l), default=-1)
-            login_idx = max((i for i, l in enumerate(lines) if "Login successful" in l), default=-1)
-            if sms_idx > login_idx:
-                return "sms"
-        if _find_captcha_image() is not None:
-            lines = logs.splitlines()
-            cap_idx = max((i for i, l in enumerate(lines) if "PicVerifyCode" in l), default=-1)
-            login_idx = max((i for i, l in enumerate(lines) if "Login successful" in l), default=-1)
-            if cap_idx > login_idx:
-                return "captcha"
-    except Exception:
-        pass
+        log_files = sorted(
+            (path for path in _OPEND_LOG_DIR.glob("*") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )[:5]
+        log_text = "\n".join(path.read_text(errors="replace")[-65536:] for path in log_files)
+    except OSError:
+        return "captcha" if _find_captcha_image() is not None else None
+
+    lines = log_text.splitlines()
+    login_idx = max((i for i, line in enumerate(lines) if "Login successful" in line), default=-1)
+    sms_idx = max((i for i, line in enumerate(lines) if "req_phone_verify_code" in line), default=-1)
+    if sms_idx > login_idx:
+        return "sms"
+    cap_idx = max((i for i, line in enumerate(lines) if "PicVerifyCode" in line), default=-1)
+    if cap_idx > login_idx and _find_captcha_image() is not None:
+        return "captcha"
     return None
 
 
@@ -386,23 +385,21 @@ class CaptchaSubmit(BaseModel):
 
 
 def _opend_exec(cmd: str) -> str:
-    import docker as _docker
-    client = _docker.from_env()
+    if not re.fullmatch(r"input_(?:phone|pic)_verify_code -code=[A-Za-z0-9]+", cmd):
+        raise HTTPException(status_code=422, detail="unsupported OpenD command")
+
+    control_path = Path(os.getenv("OPEND_CONTROL_PATH", "/mnt/opend_home/opend_input"))
     try:
-        container = client.containers.get(_OPEND_CONTAINER_NAME)
-    except _docker.errors.NotFound:
-        raise HTTPException(
-            status_code=503,
-            detail="OpenDコンテナが見つかりません。docker compose --profile moomoo up -d opend で起動してください。",
-        )
-    container.reload()
-    if container.status != "running":
-        raise HTTPException(status_code=503, detail=f"restarting:{container.status}")
-    result = container.exec_run(
-        ["bash", "-c", f"printf '{cmd}\\n' > /tmp/opend_input"],
-        user="root",
-    )
-    return (result.output or b"").decode(errors="replace").strip()
+        control_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=control_path.parent, prefix=".opend_input.", delete=False
+        ) as tmp:
+            tmp.write(cmd + "\n")
+            temporary_path = Path(tmp.name)
+        temporary_path.replace(control_path)
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=f"OpenD制御ファイルを書き込めません: {exc}") from exc
+    return "queued"
 
 
 @app.post("/opend/submit-captcha")
@@ -419,7 +416,7 @@ def opend_submit_captcha(payload: CaptchaSubmit):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"docker exec 失敗: {e}")
+        raise HTTPException(status_code=503, detail=f"OpenD command queue failed: {e}")
 
 
 # ── Worker Status ──────────────────────────────────
@@ -665,68 +662,25 @@ def receive_signal(payload: SignalIn):
         or payload.meta.get("user_id")
     )
 
-    content = payload.text
-    if url and url not in content:
-        content = f"{content}\n\nSource: {url}"
-
     broker_env, source_auto_trade_enabled, acc_type = resolve_signal_policy(payload.source, payload.meta)
 
     with get_session() as s:
-        if has_duplicate(s, [message_id, *message_id_candidates[1:]], url):
-            logger.info(
-                "duplicate signal skipped source=%s message_id=%s meta=%s",
-                payload.source,
-                message_id,
-                payload.meta,
-            )
-            return {"status": "duplicate"}
-
-        def _detect_alert_type(t: str) -> str | None:
-            if "#オプションアラート" in t or "オプションアラート" in t:
-                return "オプション"
-            if "#スイングアラート" in t or "スイングアラート" in t:
-                return "スイング"
-            if "#デイトレアラート" in t or "デイトレアラート" in t:
-                return "デイトレ"
-            return None
-
-        def _detect_signal_type(side: str, content: str, has_levels: bool) -> str | None:
-            if side.upper() == "SELL":
-                if _EXIT_RE.search(content):
-                    return "EXIT"
-            elif side.upper() == "BUY" and has_levels:
-                return "ENTRY"
-            return None
-
-        if parsed.side.upper() == "INFO":
-            return {"signal": None, "broker_env": broker_env, "auto_trade_enabled": False, "order": None}
-
-        is_reply = bool(parent_ticker)
-        has_levels = parsed.stop is not None or parsed.take is not None or bool(parsed.targets)
-        if not is_reply and not has_levels:
-            logger.info("no stop/target, skipping non-reply signal ticker=%s side=%s", parsed.ticker, parsed.side)
-            return {"signal": None, "broker_env": broker_env, "auto_trade_enabled": False, "order": None}
-
-        import json as _json
-        signal = Signal(
-            message_id=message_id,
-            author=str(author),
-            channel_id=channel_id,
-            content=content,
-            ticker=parsed.ticker,
-            side=parsed.side,
-            signal_type=_detect_signal_type(parsed.side, content, has_levels),
-            confidence=parsed.confidence,
-            timeframe=parsed.timeframe,
-            alert_type=_detect_alert_type(content),
-            entry=parsed.entry,
-            stop=parsed.stop,
-            take=parsed.take,
-            targets=_json.dumps(parsed.targets) if parsed.targets else None,
+        persisted = persist_signal(
+            s,
+            payload,
+            parsed,
+            message_id,
+            message_id_candidates,
+            url,
+            str(author),
+            channel_id,
+            parent_ticker,
         )
-        s.add(signal)
-        s.commit()
-        s.refresh(signal)
+        if persisted.status == "duplicate":
+            return {"status": "duplicate"}
+        if persisted.status == "ignored":
+            return {"signal": None, "broker_env": broker_env, "auto_trade_enabled": False, "order": None}
+        signal = persisted.signal
 
     logger.info(
         "signal stored id=%s source=%s ticker=%s side=%s broker_env=%s auto_trade=%s meta=%s parsed=%s",
@@ -797,7 +751,9 @@ def receive_signal(payload: SignalIn):
                     else:
                         sell_qty = max(1.0, round(pos_qty * exit_fraction))
                         is_full_exit = exit_fraction >= 1.0 or sell_qty >= pos_qty
-                        order_result = broker.place_order(
+                        order_result = enqueue_order(
+                            broker_name=broker.name,
+                            broker_env=broker_env,
                             ticker=parsed.ticker,
                             side="SELL",
                             qty=sell_qty,
@@ -805,24 +761,14 @@ def receive_signal(payload: SignalIn):
                             order_type="MARKET",
                             tif="DAY",
                             acc_type=_broker_acc_type,
+                            signal_id=signal.id,
                         )
-                        with get_session() as s:
-                            s.add(Order(
-                                broker=broker.name,
-                                broker_env=broker_env,
-                                order_id=order_result.get("order_id"),
-                                ticker=parsed.ticker,
-                                side="SELL",
-                                qty=sell_qty,
-                                price=order_result.get("price"),
-                                status=order_result.get("status", "NEW"),
-                                signal_id=signal.id,
-                            ))
-                            s.commit()
+                        if order_result is None:
+                            _auto_trade_blocked_reason = "risk limit exceeded"
                         logger.info(
-                            "exit order placed signal_id=%s ticker=%s qty=%s/%s (%.0f%%) broker_env=%s status=%s",
+                            "exit order queued signal_id=%s ticker=%s qty=%s/%s (%.0f%%) broker_env=%s status=%s",
                             signal.id, parsed.ticker, sell_qty, pos_qty,
-                            exit_fraction * 100, broker_env, order_result.get("status"),
+                            exit_fraction * 100, broker_env, order_result.get("status") if order_result else "SKIPPED",
                         )
                         # 全量クローズ時のみ price reminder を削除
                         if is_full_exit and hasattr(broker, "clear_price_reminders"):
@@ -917,10 +863,10 @@ def receive_signal(payload: SignalIn):
 
                 if price_skip:
                     pass
-                elif not risk_guard.can_open(parsed.ticker, qty):
-                    logger.warning("risk check failed for %s, skipping order", parsed.ticker)
                 else:
-                    order_result = broker.place_order(
+                    order_result = enqueue_order(
+                        broker_name=broker.name,
+                        broker_env=broker_env,
                         ticker=parsed.ticker,
                         side=parsed.side,
                         qty=qty,
@@ -928,25 +874,14 @@ def receive_signal(payload: SignalIn):
                         order_type=order_type,
                         tif=tif,
                         acc_type=_broker_acc_type,
+                        signal_id=signal.id,
                     )
-                    with get_session() as s:
-                        order = Order(
-                            broker=broker.name,
-                            broker_env=broker_env,
-                            order_id=order_result.get("order_id"),
-                            ticker=parsed.ticker,
-                            side=parsed.side,
-                            qty=qty,
-                            price=order_result.get("price"),
-                            status=order_result.get("status", "NEW"),
-                            reason=order_result.get("reason"),
-                            signal_id=signal.id,
-                        )
-                        s.add(order)
-                        s.commit()
+                    if order_result is None:
+                        _auto_trade_blocked_reason = "risk limit exceeded"
                     logger.info(
-                        "auto order placed signal_id=%s ticker=%s side=%s broker_env=%s status=%s",
-                        signal.id, parsed.ticker, parsed.side, broker_env, order_result.get("status"),
+                        "auto order queued signal_id=%s ticker=%s side=%s broker_env=%s status=%s",
+                        signal.id, parsed.ticker, parsed.side, broker_env,
+                        order_result.get("status") if order_result else "SKIPPED",
                     )
                     if hasattr(broker, "set_price_reminders"):
                         try:

@@ -287,12 +287,25 @@ async def main() -> None:
                 user_ids[username] = uid
 
         if USERS and not user_ids:
-            raise SystemExit("Could not resolve any Twitter user IDs")
+            log.error(
+                "Could not resolve any Twitter user IDs; retrying every %ss. "
+                "Check TWITTER_USERS, X cookies, and GraphQL endpoint IDs.",
+                POLL_SEC,
+            )
 
         seen: set[str] = set()
         log.info("poll loop started: users=%s interval=%ds", list(user_ids.keys()), POLL_SEC)
 
         while True:
+            if USERS and not user_ids:
+                for username in USERS:
+                    uid = await resolve_user_id(client, username)
+                    if uid:
+                        user_ids[username] = uid
+                if not user_ids:
+                    await asyncio.sleep(POLL_SEC)
+                    continue
+
             enabled = heartbeat()
             if enabled:
                 # 通常ツイートのポーリング

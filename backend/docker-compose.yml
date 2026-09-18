@@ -4,6 +4,7 @@ services:
   backend:
     build: .
     container_name: trader-backend
+    restart: unless-stopped
     ports:
       - "8000:8000"
     env_file:
@@ -17,11 +18,15 @@ services:
       MOOMOO_OPEND_PORT: ${MOOMOO_OPEND_PORT:-11111}
       MOOMOO_RSA_PRIVATE_KEY_PATH: ${MOOMOO_RSA_PRIVATE_KEY_PATH:-/app/opend_keys/conn_key.pem}
       COOKIE_STORE_PATH: /app/cookie_data/twitter_cookies.json
+      OPEND_CONTROL_PATH: /mnt/opend_home/opend_input
+      OPEND_LOG_PATH: /mnt/opend_logs
     volumes:
       - backend_data:/app/data
       - ./opend_keys:/app/opend_keys:ro
       - cookie_data:/app/cookie_data
-    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+      - opend_home:/mnt/opend_home
+      - ./opend_data:/mnt/opend_logs:ro
+    command: ["sh", "-c", "alembic upgrade head && uvicorn api.main:app --host 0.0.0.0 --port 8000"]
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\""]
       interval: 10s
@@ -32,6 +37,7 @@ services:
   twitter_worker:
     build: .
     container_name: twitter_worker
+    restart: unless-stopped
     env_file:
       - .env
       - .env.local
@@ -50,6 +56,7 @@ services:
   dexter_worker:
     build: .
     container_name: dexter_worker
+    restart: unless-stopped
     env_file:
       - .env
       - .env.local
@@ -65,6 +72,7 @@ services:
   sync_worker:
     build: .
     container_name: sync_worker
+    restart: unless-stopped
     env_file:
       - .env
       - .env.local
@@ -79,6 +87,23 @@ services:
       - backend_data:/app/data
     command: ["python", "-m", "workers.scheduler"]
 
+  order_executor:
+    build: .
+    container_name: order_executor
+    restart: unless-stopped
+    env_file:
+      - .env
+      - .env.local
+    environment:
+      PYTHONPATH: /app/src
+      TZ: Asia/Tokyo
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - backend_data:/app/data
+    command: ["python", "-m", "workers.order_executor"]
+
   # ── moomoo プロファイル（OpenD ゲートウェイ）─────────────
   opend:
     profiles: [moomoo]
@@ -86,6 +111,7 @@ services:
       context: ..
       dockerfile: backend/opend/Dockerfile
     container_name: moomoo-opend
+    restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
@@ -99,10 +125,11 @@ services:
       MOOMOO_TELNET_IP: 127.0.0.1
       MOOMOO_TELNET_PORT: 22222
       MOOMOO_OPEND_RSA_PRIVATE_KEY_PATH: ${MOOMOO_OPEND_RSA_PRIVATE_KEY_PATH:-/opt/opend/keys/conn_key.pem}
+      OPEND_CONTROL_PATH: /root/.com.moomoo.OpenD/opend_input
     volumes:
       - ./opend_data:/opt/opend/FutuOpenD/Log
       - ./opend_keys:/opt/opend/keys:ro
-    restart: unless-stopped
+      - opend_home:/root/.com.moomoo.OpenD
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/11111'"]
       interval: 15s
@@ -113,3 +140,4 @@ services:
 volumes:
   backend_data:
   cookie_data:
+  opend_home:
