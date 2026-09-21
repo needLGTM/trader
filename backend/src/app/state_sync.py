@@ -17,6 +17,26 @@ _TERMINAL_FILLED_STATUSES = {"FILLED"}
 HISTORY_DAYS = 180  # moomoo 約定履歴の取得日数
 
 
+def _dedupe_daily_pnl(rows: list[PnL] | list[Any]) -> list[PnL]:
+    merged: dict[str, PnL] = {}
+    for row in rows:
+        date_key = (row.date or "").strip()
+        if not date_key:
+            continue
+        current = merged.get(date_key)
+        if current is None:
+            merged[date_key] = PnL(
+                date=date_key,
+                realized=float(row.realized or 0.0),
+                unrealized=float(row.unrealized or 0.0),
+                broker_env=row.broker_env,
+            )
+        else:
+            current.realized += float(row.realized or 0.0)
+            current.unrealized += float(row.unrealized or 0.0)
+    return sorted(merged.values(), key=lambda row: row.date)
+
+
 def sync_orders(session: Session) -> list[Order]:
     rows = session.exec(select(Order).order_by(Order.created_at.desc())).all()
     brokers: dict[tuple[str, str], Any] = {}
@@ -237,16 +257,20 @@ def sync_pnl(session: Session, broker_name: str | None = None, broker_env: str |
     session.exec(delete(PnL).where(PnL.broker_env == resolved_env))
 
     pnl_dates = sorted(realized_by_date)
+    daily_rows: list[PnL] = []
     for date_key in pnl_dates:
-        session.add(PnL(date=date_key, realized=realized_by_date[date_key], unrealized=0.0, broker_env=resolved_env))
+        daily_rows.append(PnL(date=date_key, realized=realized_by_date[date_key], unrealized=0.0, broker_env=resolved_env))
 
     today_key = datetime.now().date().isoformat()
     if pnl_dates and today_key == pnl_dates[-1]:
-        latest = session.exec(select(PnL).where(PnL.date == today_key, PnL.broker_env == resolved_env)).first()
-        if latest:
-            latest.unrealized = unrealized_total
+        latest_row = PnL(date=today_key, realized=realized_by_date.get(today_key, 0.0), unrealized=unrealized_total, broker_env=resolved_env)
+        daily_rows = [row for row in daily_rows if row.date != today_key]
+        daily_rows.append(latest_row)
     else:
-        session.add(PnL(date=today_key, realized=0.0, unrealized=unrealized_total, broker_env=resolved_env))
+        daily_rows.append(PnL(date=today_key, realized=0.0, unrealized=unrealized_total, broker_env=resolved_env))
+
+    for row in _dedupe_daily_pnl(daily_rows):
+        session.add(row)
 
     session.commit()
     return session.exec(select(PnL).where(PnL.broker_env == resolved_env).order_by(PnL.date.asc())).all()

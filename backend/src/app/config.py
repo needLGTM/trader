@@ -19,7 +19,8 @@ class Settings(BaseModel):
 
     max_daily_loss: float = float(os.getenv("MAX_DAILY_LOSS", "500"))
     max_position_per_ticker: int = int(os.getenv("MAX_POSITION_PER_TICKER", "2"))
-    default_order_usd: float = float(os.getenv("DEFAULT_ORDER_USD", "200"))
+    default_order_usd_real: float = float(os.getenv("DEFAULT_ORDER_USD_REAL", os.getenv("DEFAULT_ORDER_USD", "200")))
+    default_order_usd_simulate: float = float(os.getenv("DEFAULT_ORDER_USD_SIMULATE", os.getenv("DEFAULT_ORDER_USD", "200")))
     max_price_deviation_pct: float = float(os.getenv("MAX_PRICE_DEVIATION_PCT", "2.0"))
     market: str = os.getenv("MARKET", "US")
 

@@ -60,11 +60,11 @@ from app.schemas import SignalIn, ExtractedSignal
 from app.utils import naive_extract
 from app.order_service import enqueue_order
 from app.signal_service import persist_signal
-from app.state_sync import sync_executions, sync_orders, sync_positions, sync_pnl, sync_trading_state
+from app.state_sync import _dedupe_daily_pnl, sync_executions, sync_orders, sync_positions, sync_pnl, sync_trading_state
 from app.cookie_store import save_cookies, load_cookies, get_version
 from llm.base import LLM
 from broker import get_broker, reset_broker_cache
-from sqlmodel import select
+from sqlmodel import delete, select
 from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger("api")
@@ -78,6 +78,7 @@ _RT_KEYS = frozenset({
     "twitter_acc_type", "dexter_acc_type",
     "auto_trade_enabled", "twitter_polling_enabled",
     "twitter_auto_trade_enabled", "dexter_auto_trade_enabled",
+    "default_order_usd_real", "default_order_usd_simulate",
 })
 
 
@@ -103,6 +104,15 @@ _worker_last_seen: dict[str, datetime.datetime] = {}
 
 def _get(key: str) -> object:
     return _rt.get(key, getattr(settings, key))
+
+
+def _resolve_default_order_usd_for_env(broker_env: str | None) -> float:
+    env = (broker_env or str(_get("broker_env") or "SIMULATE")).upper()
+    key = "default_order_usd_real" if env == "REAL" else "default_order_usd_simulate"
+    value = _get(key)
+    if value is None:
+        value = getattr(settings, "default_order_usd_real" if env == "REAL" else "default_order_usd_simulate")
+    return float(value)
 
 
 app = FastAPI(title="Discord-LLM-Trader")
@@ -246,6 +256,8 @@ class TradingSettingsOut(BaseModel):
     twitter_polling_enabled: bool
     twitter_auto_trade_enabled: bool
     dexter_auto_trade_enabled: bool
+    default_order_usd_real: float
+    default_order_usd_simulate: float
 
 
 class TradingSettingsPatch(BaseModel):
@@ -258,6 +270,8 @@ class TradingSettingsPatch(BaseModel):
     twitter_polling_enabled: bool | None = None
     twitter_auto_trade_enabled: bool | None = None
     dexter_auto_trade_enabled: bool | None = None
+    default_order_usd_real: float | None = None
+    default_order_usd_simulate: float | None = None
 
 
 def _build_trading_settings() -> TradingSettingsOut:
@@ -272,6 +286,8 @@ def _build_trading_settings() -> TradingSettingsOut:
         twitter_polling_enabled=bool(_get("twitter_polling_enabled")),
         twitter_auto_trade_enabled=bool(_get("twitter_auto_trade_enabled")),
         dexter_auto_trade_enabled=bool(_get("dexter_auto_trade_enabled")),
+        default_order_usd_real=float(_get("default_order_usd_real")),
+        default_order_usd_simulate=float(_get("default_order_usd_simulate")),
     )
 
 
@@ -301,6 +317,16 @@ def patch_trading_settings(payload: TradingSettingsPatch):
         val = getattr(payload, bool_key)
         if val is not None:
             _rt[bool_key] = val
+    if payload.default_order_usd_real is not None:
+        value = float(payload.default_order_usd_real)
+        if value <= 0:
+            raise HTTPException(status_code=422, detail="default_order_usd_real must be > 0")
+        _rt["default_order_usd_real"] = value
+    if payload.default_order_usd_simulate is not None:
+        value = float(payload.default_order_usd_simulate)
+        if value <= 0:
+            raise HTTPException(status_code=422, detail="default_order_usd_simulate must be > 0")
+        _rt["default_order_usd_simulate"] = value
     _save_rt()
     return _build_trading_settings()
 
@@ -600,7 +626,13 @@ def list_pnl(broker_env: str | None = Query(default=None)):
     with get_session() as s:
         sync_trading_state(s, broker_env=env)
         rows = s.exec(select(PnL).where(PnL.broker_env == env).order_by(PnL.date.asc())).all()
-        return jsonable_encoder(rows)
+        deduped = _dedupe_daily_pnl(rows)
+        if len(deduped) != len(rows):
+            s.exec(delete(PnL).where(PnL.broker_env == env))
+            for row in deduped:
+                s.add(row)
+            s.commit()
+        return jsonable_encoder(deduped)
 
 
 @app.post("/sync")
@@ -806,10 +838,11 @@ def receive_signal(payload: SignalIn):
                     try:
                         current_price = float(quote_last_price(parsed.ticker))
                         if current_price > 0 and requested_qty is None:
-                            qty = max(settings.default_order_usd / current_price, 1.0)
+                            order_budget = _resolve_default_order_usd_for_env(broker_env)
+                            qty = max(order_budget / current_price, 1.0)
                             logger.info(
-                                "calculated order qty from live quote ticker=%s last_price=%s qty=%s",
-                                parsed.ticker, current_price, qty,
+                                "calculated order qty from live quote ticker=%s last_price=%s broker_env=%s budget_usd=%s qty=%s",
+                                parsed.ticker, current_price, broker_env, order_budget, qty,
                             )
                     except Exception as quote_exc:
                         logger.warning("failed to fetch live quote for %s: %s", parsed.ticker, quote_exc)

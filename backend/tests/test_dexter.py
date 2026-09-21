@@ -78,3 +78,41 @@ class TestGetDexterDirFromEnv:
         with patch.dict(os.environ, {"DEXTER_DIR": str(tmp_path)}):
             result = get_dexter_dir_from_env()
         assert result == tmp_path
+
+
+class TestDailyPnlDeduplication:
+    def test_duplicate_date_rows_are_merged(self):
+        from app.models import PnL
+        from app.state_sync import _dedupe_daily_pnl
+
+        rows = [
+            PnL(date="2024-01-01", realized=10.0, unrealized=0.0, broker_env="SIMULATE"),
+            PnL(date="2024-01-01", realized=20.0, unrealized=5.0, broker_env="SIMULATE"),
+            PnL(date="2024-01-02", realized=7.5, unrealized=1.5, broker_env="SIMULATE"),
+        ]
+
+        deduped = _dedupe_daily_pnl(rows)
+
+        assert [row.date for row in deduped] == ["2024-01-01", "2024-01-02"]
+        assert deduped[0].realized == 30.0
+        assert deduped[0].unrealized == 5.0
+        assert deduped[1].realized == 7.5
+
+
+class TestDefaultOrderUsdByBrokerEnv:
+    def test_uses_real_or_simulate_value_by_env(self):
+        from api.main import _resolve_default_order_usd_for_env
+
+        original = dict(__import__("api.main", fromlist=["_rt"])._rt)
+        try:
+            __import__("api.main", fromlist=["_rt"])._rt.clear()
+            __import__("api.main", fromlist=["_rt"])._rt.update({
+                "default_order_usd_real": 300.0,
+                "default_order_usd_simulate": 120.0,
+            })
+            assert _resolve_default_order_usd_for_env("REAL") == 300.0
+            assert _resolve_default_order_usd_for_env("SIMULATE") == 120.0
+            assert _resolve_default_order_usd_for_env(None) == 120.0
+        finally:
+            __import__("api.main", fromlist=["_rt"])._rt.clear()
+            __import__("api.main", fromlist=["_rt"])._rt.update(original)

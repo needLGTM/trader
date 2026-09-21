@@ -9,6 +9,7 @@ import {
   Group,
   Image,
   Loader,
+  NumberInput,
   SegmentedControl,
   Stack,
   Switch,
@@ -32,6 +33,8 @@ type TradingSettings = {
   twitter_polling_enabled: boolean;
   twitter_auto_trade_enabled: boolean;
   dexter_auto_trade_enabled: boolean;
+  default_order_usd_real: number;
+  default_order_usd_simulate: number;
 };
 
 type OpendStatus = {
@@ -702,6 +705,40 @@ export function SettingsPage() {
                 checked={settings.dexter_auto_trade_enabled}
                 onChange={(v) => patch({ dexter_auto_trade_enabled: v })}
               />
+              <Divider />
+              <Stack gap="sm">
+                <Text size="sm" fw={700}>売買金額（自動エントリー）</Text>
+                <Group justify="space-between" align="center" wrap="nowrap">
+                  <Box style={{ flex: 1 }}>
+                    <Text size="sm" fw={600}>REAL</Text>
+                    <Text size="xs" c="dimmed">実口座の1注文あたりドル金額</Text>
+                  </Box>
+                  <NumberInput
+                    value={settings.default_order_usd_real}
+                    onChange={(value) => patch({ default_order_usd_real: Number(value ?? 0) })}
+                    min={1}
+                    step={50}
+                    suffix=" USD"
+                    w={170}
+                    styles={{ input: { fontSize: 16, fontWeight: 700 } }}
+                  />
+                </Group>
+                <Group justify="space-between" align="center" wrap="nowrap">
+                  <Box style={{ flex: 1 }}>
+                    <Text size="sm" fw={600}>SIMULATE</Text>
+                    <Text size="xs" c="dimmed">紙トレードの1注文あたりドル金額</Text>
+                  </Box>
+                  <NumberInput
+                    value={settings.default_order_usd_simulate}
+                    onChange={(value) => patch({ default_order_usd_simulate: Number(value ?? 0) })}
+                    min={1}
+                    step={50}
+                    suffix=" USD"
+                    w={170}
+                    styles={{ input: { fontSize: 16, fontWeight: 700 } }}
+                  />
+                </Group>
+              </Stack>
             </Stack>
           </Card>
         </>
