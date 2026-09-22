@@ -59,6 +59,16 @@ function asFiniteNumber(value: unknown): number | null {
   return Number.isFinite(number) ? number : null;
 }
 
+function matchedExecutionIds(execution: ExecutionRow): number[] {
+  if (!execution.matched_execution_ids) return [];
+  try {
+    const ids = JSON.parse(execution.matched_execution_ids);
+    return Array.isArray(ids) ? ids.filter((id): id is number => Number.isInteger(id)) : [];
+  } catch {
+    return [];
+  }
+}
+
 function PnlText({ value }: { value: number }) {
   const color = value > 0 ? "teal" : value < 0 ? "red" : undefined;
   return (
@@ -210,16 +220,20 @@ export function PerformancePage() {
   const liveUnrealized = useMemo(() => {
     return positions.reduce((sum, p) => {
       const snap = snapshot[p.ticker];
-      if (!snap) return sum;
-      return sum + (snap.last_price - p.avg_price) * p.qty;
+      const lastPrice = snap ? asFiniteNumber(snap.last_price) : null;
+      const avgPrice = asFiniteNumber(p.avg_price);
+      const qty = asFiniteNumber(p.qty);
+      if (lastPrice == null || avgPrice == null || qty == null) return sum;
+      return sum + (lastPrice - avgPrice) * qty;
     }, 0);
   }, [positions, snapshot]);
 
   const stats = useMemo(() => {
-    const totalRealized = pnl.reduce((s, r) => s + r.realized, 0);
+    const totalRealized = pnl.reduce((s, r) => s + (asFiniteNumber(r.realized) ?? 0), 0);
     const today = new Date().toISOString().slice(0, 10);
-    const todayRow = pnl.find((r) => r.date === today);
-    return { totalRealized, todayPnl: todayRow?.realized ?? null, tradeCount: executions.length };
+    const todayRow = pnl.find((r) => String(r.date ?? "") === today);
+    const todayPnl = todayRow ? asFiniteNumber(todayRow.realized) : null;
+    return { totalRealized, todayPnl, tradeCount: executions.length };
   }, [pnl, executions]);
 
   const sortedPnl = useMemo(
@@ -230,6 +244,35 @@ export function PerformancePage() {
     () => [...executions].sort((a, b) => String(b.executed_at ?? "").localeCompare(String(a.executed_at ?? ""))),
     [executions]
   );
+  const executionRows = useMemo(() => {
+    const exitsByEntry = new Map<number, ExecutionRow[]>();
+    const matchedExitIds = new Set<number>();
+    for (const execution of sortedExec) {
+      if (execution.execution_type !== "EXIT" && execution.execution_type !== "ENTRY_AND_EXIT") continue;
+      for (const entryId of matchedExecutionIds(execution)) {
+        const exits = exitsByEntry.get(entryId) ?? [];
+        exits.push(execution);
+        exitsByEntry.set(entryId, exits);
+        matchedExitIds.add(execution.id);
+        break;
+      }
+    }
+
+    const rows: Array<{ execution: ExecutionRow; nested: boolean }> = [];
+    for (const execution of sortedExec) {
+      if (execution.execution_type === "EXIT") continue;
+      rows.push({ execution, nested: false });
+      for (const exit of exitsByEntry.get(execution.id) ?? []) {
+        rows.push({ execution: exit, nested: true });
+      }
+    }
+    for (const execution of sortedExec) {
+      if (execution.execution_type === "EXIT" && !matchedExitIds.has(execution.id)) {
+        rows.push({ execution, nested: false });
+      }
+    }
+    return rows;
+  }, [sortedExec]);
 
   const hasSnapshot = Object.keys(snapshot).length > 0;
 
@@ -315,7 +358,7 @@ export function PerformancePage() {
                     const unrealized = asFiniteNumber(row.unrealized) ?? 0;
                     return (
                     <Table.Tr key={row.id}>
-                      <Table.Td style={{ fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{row.date}</Table.Td>
+                      <Table.Td style={{ fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{row.date || "—"}</Table.Td>
                       <Table.Td style={{ textAlign: "right" }}><PnlText value={realized} /></Table.Td>
                       <Table.Td style={{ textAlign: "right" }}><PnlText value={unrealized} /></Table.Td>
                     </Table.Tr>
@@ -422,29 +465,27 @@ export function PerformancePage() {
                 <Table.Th>Time</Table.Th>
                 <Table.Th>Ticker</Table.Th>
                 <Table.Th>Side</Table.Th>
-                <Table.Th>Match</Table.Th>
+                <Table.Th>Type</Table.Th>
                 <Table.Th style={{ textAlign: "right" }}>Qty</Table.Th>
                 <Table.Th style={{ textAlign: "right" }}>Price</Table.Th>
                 <Table.Th style={{ textAlign: "right" }}>Realized</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {sortedExec.slice(0, 100).map((ex) => (
-                <Table.Tr key={ex.id}>
+              {executionRows.slice(0, 100).map(({ execution: ex, nested }) => (
+                <Table.Tr key={ex.id} style={nested ? { background: "var(--mantine-color-gray-0)" } : undefined}>
                   <Table.Td style={{ whiteSpace: "nowrap", fontSize: 12 }}>
-                    {new Date(ex.executed_at).toLocaleString("ja-JP")}
+                    {nested && <Text span c="dimmed" mr={6}>↳</Text>}
+                    {ex.executed_at ? new Date(ex.executed_at).toLocaleString("ja-JP") : "—"}
                   </Table.Td>
-                  <Table.Td><Text fw={700} size="sm">{ex.ticker}</Text></Table.Td>
+                  <Table.Td style={nested ? { paddingLeft: 28 } : undefined}><Text fw={700} size="sm">{ex.ticker}</Text></Table.Td>
                   <Table.Td><SideBadge side={ex.side} /></Table.Td>
                   <Table.Td>
                     <ExecutionTypeBadge type={ex.execution_type ?? "ENTRY"} />
-                    {ex.matched_execution_ids && (
-                      <Text size="xs" c="dimmed">← #{JSON.parse(ex.matched_execution_ids).join(", #")}</Text>
-                    )}
                   </Table.Td>
                   <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>{ex.qty}</Table.Td>
                   <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
-                    {ex.price.toFixed(2)}
+                    {asFiniteNumber(ex.price)?.toFixed(2) ?? "—"}
                   </Table.Td>
                   <Table.Td style={{ textAlign: "right" }}>
                     {ex.realized_pnl == null ? <Text size="xs" c="dimmed">—</Text> : <PnlText value={ex.realized_pnl} />}

@@ -1,15 +1,57 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 
 from app.db import get_session
-from app.models import Order
+from app.models import Order, Signal
 from app.risk import risk_guard
 from broker import get_broker, reset_broker_cache
 from sqlmodel import select
 
 log = logging.getLogger(__name__)
+
+
+def enqueue_target_orders_for_entry(
+    session,
+    entry_order: Order,
+    filled_qty: float,
+    entry_execution_id: int | None = None,
+) -> None:
+    signal = session.get(Signal, entry_order.signal_id) if entry_order.signal_id else None
+    if signal is None or not signal.targets:
+        return
+    try:
+        targets = [float(value) for value in json.loads(signal.targets)]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return
+    targets = [target for target in targets if target > 0]
+    if not targets:
+        return
+    marker_key = f"entry_order_id={entry_order.id}"
+    if session.exec(select(Order).where(Order.reason.contains(marker_key))).first():
+        return
+    marker = f"TARGET_ORDER {marker_key}"
+    base_qty = filled_qty / len(targets)
+    for index, target in enumerate(targets):
+        qty = filled_qty - base_qty * (len(targets) - 1) if index == 0 else base_qty
+        session.add(Order(
+            broker=entry_order.broker,
+            broker_env=entry_order.broker_env,
+            ticker=entry_order.ticker,
+            side="SELL",
+            qty=qty,
+            price=target,
+            status="PENDING",
+            reason=f"{marker} target_index={index + 1}",
+            signal_id=entry_order.signal_id,
+            order_type="LIMIT",
+            tif=entry_order.tif,
+            fill_outside_rth=entry_order.fill_outside_rth,
+            acc_type=entry_order.acc_type,
+        ))
+    log.info("target limit orders queued entry_order_id=%s targets=%s qty=%s", entry_order.id, targets, filled_qty)
 
 
 def enqueue_order(
@@ -90,6 +132,8 @@ def execute_pending_orders() -> int:
                 candidate.reason = result.get("reason")
                 candidate.submitted_at = datetime.datetime.utcnow()
                 risk_guard.finish_reservation(session, candidate.id, consumed=True)
+                if candidate.side.upper() == "BUY" and candidate.status == "FILLED":
+                    enqueue_target_orders_for_entry(session, candidate, float(result.get("qty") or candidate.qty))
                 session.commit()
                 executed += 1
             except Exception as exc:

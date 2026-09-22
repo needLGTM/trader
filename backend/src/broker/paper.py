@@ -60,5 +60,11 @@ class PaperBroker(Broker):
     def cancel_all(self) -> None:
         return None
 
+    def cancel_order(self, order_id: str) -> None:
+        return None
+
+    def modify_order(self, order_id: str, qty: float, price: float | None) -> None:
+        return None
+
     def sync_order(self, order_id: str) -> dict | None:
         return None

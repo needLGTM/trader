@@ -10,6 +10,7 @@ from sqlmodel import Session, delete, select
 
 from app.config import settings
 from app.models import Execution, Order, PnL, Position
+from app.order_service import enqueue_target_orders_for_entry
 from broker import get_broker
 
 log = logging.getLogger(__name__)
@@ -131,8 +132,26 @@ def sync_executions(session: Session) -> list[Execution]:
 
     session.commit()
     _rebuild_execution_pairings(session)
+    _enqueue_target_orders(session)
     session.commit()
     return session.exec(select(Execution).order_by(Execution.executed_at.desc())).all()
+
+
+def _enqueue_target_orders(session: Session) -> None:
+    """Create SELL limit orders after a newly filled BUY has a target list."""
+    executions = session.exec(
+        select(Execution).where(
+            Execution.side == "BUY",
+            Execution.order_id.is_not(None),
+        )
+    ).all()
+    for execution in executions:
+        if execution.order_id is None:
+            continue
+        entry_order = session.get(Order, execution.order_id)
+        if entry_order is None or entry_order.status != "FILLED":
+            continue
+        enqueue_target_orders_for_entry(session, entry_order, float(execution.qty), execution.id)
 
 
 def _rebuild_execution_pairings(session: Session) -> None:

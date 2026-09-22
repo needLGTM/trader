@@ -274,6 +274,11 @@ class TradingSettingsPatch(BaseModel):
     default_order_usd_simulate: float | None = None
 
 
+class OrderModifyIn(BaseModel):
+    price: float | None = None
+    qty: float | None = None
+
+
 def _build_trading_settings() -> TradingSettingsOut:
     return TradingSettingsOut(
         broker=str(_get("broker")),
@@ -595,6 +600,57 @@ def list_orders(broker_env: str | None = Query(default=None)):
         return jsonable_encoder(rows)
 
 
+@app.patch("/orders/{order_id}")
+def modify_order(order_id: int, payload: OrderModifyIn):
+    with get_session() as s:
+        order = s.get(Order, order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="order not found")
+        if order.status.upper() not in {"PENDING", "NEW", "SUBMITTED", "EXECUTING", "PARTIALLY_FILLED"}:
+            raise HTTPException(status_code=409, detail=f"order cannot be modified in status {order.status}")
+        if payload.price is None and payload.qty is None:
+            raise HTTPException(status_code=422, detail="price or qty is required")
+        next_price = payload.price if payload.price is not None else order.price
+        next_qty = payload.qty if payload.qty is not None else order.qty
+        if next_qty is None or next_qty <= 0:
+            raise HTTPException(status_code=422, detail="qty must be > 0")
+        try:
+            broker = get_broker(broker_name=order.broker, broker_env=order.broker_env)
+            if order.order_id:
+                broker.modify_order(order.order_id, next_qty, next_price)
+            order.price = next_price
+            order.qty = next_qty
+            order.reason = None
+            s.commit()
+            s.refresh(order)
+            return jsonable_encoder(order)
+        except Exception as exc:
+            s.rollback()
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.delete("/orders/{order_id}")
+def cancel_order(order_id: int):
+    with get_session() as s:
+        order = s.get(Order, order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="order not found")
+        if order.status.upper() not in {"PENDING", "NEW", "SUBMITTED", "EXECUTING", "PARTIALLY_FILLED"}:
+            raise HTTPException(status_code=409, detail=f"order cannot be canceled in status {order.status}")
+        try:
+            broker = get_broker(broker_name=order.broker, broker_env=order.broker_env)
+            if order.order_id:
+                broker.cancel_order(order.order_id)
+            order.status = "CANCELED"
+            order.reason = "canceled by user"
+            s.commit()
+            s.refresh(order)
+            return jsonable_encoder(order)
+        except Exception as exc:
+            s.rollback()
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.get("/positions")
 def list_positions(broker_env: str | None = Query(default=None), acc_type: str | None = Query(default=None)):
     env = (broker_env or str(_get("broker_env"))).upper()
@@ -838,8 +894,11 @@ def receive_signal(payload: SignalIn):
             else:
                 # ── ENTRY (BUY): 既存ロジック ─────────────────────────────────
                 requested_qty = ensure_float(payload.meta.get("qty"))
-                order_type = str(payload.meta.get("order_type") or "MARKET").upper()
-                limit_price = ensure_float(payload.meta.get("limit_price") or payload.meta.get("price"))
+                requested_order_type = payload.meta.get("order_type")
+                order_type = str(requested_order_type or ("LIMIT" if parsed.entry is not None else "MARKET")).upper()
+                limit_price = ensure_float(
+                    payload.meta.get("limit_price") or payload.meta.get("price") or parsed.entry
+                )
                 tif = str(payload.meta.get("tif") or "DAY").upper()
 
                 qty = requested_qty if requested_qty and requested_qty > 0 else 1.0

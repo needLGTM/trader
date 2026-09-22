@@ -32,3 +32,9 @@ class Broker(ABC):
 
     def sync_order(self, order_id: str) -> dict | None:
         return None
+
+    def cancel_order(self, order_id: str) -> None:
+        raise NotImplementedError("order cancellation is not supported by this broker")
+
+    def modify_order(self, order_id: str, qty: float, price: float | None) -> None:
+        raise NotImplementedError("order modification is not supported by this broker")

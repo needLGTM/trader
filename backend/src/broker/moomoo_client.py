@@ -879,6 +879,32 @@ class MoomooBroker(Broker):
             else:
                 log.info("Cancelled Moomoo order %s", order_id)
 
+    def cancel_order(self, order_id: str) -> None:
+        ret, err = self._ctx.modify_order(
+            ModifyOrderOp.CANCEL,
+            order_id=order_id,
+            qty=0,
+            price=0,
+            trd_env=self._trd_env,
+            acc_id=self._acc_id,
+        )
+        if ret != RET_OK:
+            msg = err if isinstance(err, str) else "Unknown error"
+            raise RuntimeError(f"Moomoo order cancellation failed: {msg}")
+
+    def modify_order(self, order_id: str, qty: float, price: float | None) -> None:
+        ret, err = self._ctx.modify_order(
+            ModifyOrderOp.NORMAL,
+            order_id=order_id,
+            qty=qty,
+            price=price or 0.0,
+            trd_env=self._trd_env,
+            acc_id=self._acc_id,
+        )
+        if ret != RET_OK:
+            msg = err if isinstance(err, str) else "Unknown error"
+            raise RuntimeError(f"Moomoo order modification failed: {msg}")
+
     def sync_order(self, order_id: str) -> Dict[str, Any] | None:
         ret, data = self._ctx.order_list_query(
             order_id=order_id,

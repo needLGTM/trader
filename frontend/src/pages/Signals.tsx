@@ -10,6 +10,8 @@ import {
   Grid,
   Group,
   Loader,
+  Modal,
+  NumberInput,
   SegmentedControl,
   Stack,
   Table,
@@ -93,14 +95,24 @@ function EnvBadge({ env }: { env: string }) {
 type ScreenerResult = Record<string, unknown>;
 
 export function SignalsPage() {
-  const [env, setEnv] = useState<"SIMULATE" | "REAL">("REAL");
-  const [accType, setAccType] = useState<"ALL" | "MARGIN" | "CASH">("ALL");
+  const [env, setEnv] = useState<"SIMULATE" | "REAL">(() => {
+    const saved = localStorage.getItem("signals.env") ?? localStorage.getItem("performance.env");
+    return saved === "SIMULATE" || saved === "REAL" ? saved : "REAL";
+  });
+  const [accType, setAccType] = useState<"ALL" | "MARGIN" | "CASH">(() => {
+    const saved = localStorage.getItem("signals.accType") ?? localStorage.getItem("performance.accType");
+    return saved === "ALL" || saved === "MARGIN" || saved === "CASH" ? saved : "ALL";
+  });
   const [signals, setSignals] = useState<SignalRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [positions, setPositions] = useState<PositionRow[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<"ALL" | "ENTRY" | "EXIT">("ALL");
+  const [editingOrder, setEditingOrder] = useState<OrderRow | null>(null);
+  const [editPrice, setEditPrice] = useState<number | string>("");
+  const [editQty, setEditQty] = useState<number | string>("");
+  const [orderActionError, setOrderActionError] = useState<string | null>(null);
 
   // Screener state
   const [screenerTicker, setScreenerTicker] = useState("");
@@ -128,12 +140,16 @@ export function SignalsPage() {
 
   const handleEnvChange = (v: string) => {
     const next = v as "SIMULATE" | "REAL";
+    localStorage.setItem("signals.env", next);
+    localStorage.setItem("performance.env", next);
     setEnv(next);
     fetchAll(next, accType);
   };
 
   const handleAccTypeChange = (v: string) => {
     const next = v as "ALL" | "MARGIN" | "CASH";
+    localStorage.setItem("signals.accType", next);
+    localStorage.setItem("performance.accType", next);
     setAccType(next);
     fetchAll(env, next);
   };
@@ -183,6 +199,50 @@ export function SignalsPage() {
     }
     return map;
   }, [orders]);
+
+  const signalsById = useMemo(() => new Map(signals.map((signal) => [signal.id, signal])), [signals]);
+
+  const openOrderEditor = (order: OrderRow) => {
+    const signal = order.signal_id == null ? undefined : signalsById.get(order.signal_id);
+    setEditingOrder(order);
+    setEditPrice(order.price && order.price > 0 ? order.price : signal?.entry ?? "");
+    setEditQty(order.qty);
+    setOrderActionError(null);
+  };
+
+  const modifyOrder = async () => {
+    if (!editingOrder) return;
+    setOrderActionError(null);
+    const price = Number(editPrice);
+    const qty = Number(editQty);
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(qty) || qty <= 0) {
+      setOrderActionError("価格と数量は0より大きい数値で入力してください。");
+      return;
+    }
+    const response = await fetch(`${API}/orders/${editingOrder.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ price, qty }),
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      setOrderActionError(detail.detail ?? "注文を変更できませんでした。");
+      return;
+    }
+    setEditingOrder(null);
+    await fetchAll(env, accType);
+  };
+
+  const cancelOrder = async (order: OrderRow) => {
+    if (!window.confirm(`${order.ticker} の注文をキャンセルしますか？`)) return;
+    const response = await fetch(`${API}/orders/${order.id}`, { method: "DELETE" });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      setOrderActionError(detail.detail ?? "注文をキャンセルできませんでした。");
+      return;
+    }
+    await fetchAll(env, accType);
+  };
 
   const entryCount = useMemo(
     () => signals.filter((s) => (s.signal_type ?? "").toUpperCase() === "ENTRY").length,
@@ -336,10 +396,13 @@ export function SignalsPage() {
                     <Table.Th>Time</Table.Th>
                     <Table.Th>Ticker</Table.Th>
                     <Table.Th>Side</Table.Th>
+                    <Table.Th>Entry</Table.Th>
+                    <Table.Th>Order price</Table.Th>
                     <Table.Th style={{ textAlign: "right" }}>Qty</Table.Th>
                     <Table.Th>Status</Table.Th>
                     <Table.Th>Env</Table.Th>
                     <Table.Th>Reason</Table.Th>
+                    <Table.Th>Actions</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
@@ -350,11 +413,26 @@ export function SignalsPage() {
                       </Table.Td>
                       <Table.Td><Text fw={700} size="sm">{o.ticker}</Text></Table.Td>
                       <Table.Td><SideBadge side={o.side} /></Table.Td>
+                      <Table.Td>
+                        {(() => {
+                          const entry = o.signal_id == null ? null : signalsById.get(o.signal_id)?.entry;
+                          return entry == null ? <Text size="xs" c="dimmed">—</Text> : `$${Number(entry).toFixed(2)}`;
+                        })()}
+                      </Table.Td>
+                      <Table.Td>{o.price == null || o.price === 0 ? <Text size="xs" c="dimmed">成行</Text> : `$${Number(o.price).toFixed(2)}`}</Table.Td>
                       <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>{o.qty}</Table.Td>
                       <Table.Td><StatusBadge status={o.status} /></Table.Td>
                       <Table.Td><EnvBadge env={o.broker_env} /></Table.Td>
                       <Table.Td style={{ fontSize: 11, color: "var(--mantine-color-dimmed)" }}>
                         {o.reason ?? ""}
+                      </Table.Td>
+                      <Table.Td>
+                        {["PENDING", "NEW", "SUBMITTED", "EXECUTING", "PARTIALLY_FILLED"].includes(o.status.toUpperCase()) && (
+                          <Group gap={4} wrap="nowrap">
+                            <Button size="compact-xs" variant="light" onClick={() => openOrderEditor(o)}>修正</Button>
+                            <Button size="compact-xs" variant="light" color="red" onClick={() => cancelOrder(o)}>取消</Button>
+                          </Group>
+                        )}
                       </Table.Td>
                     </Table.Tr>
                   ))}
@@ -420,6 +498,19 @@ export function SignalsPage() {
           </Card>
         </Grid.Col>
       </Grid>
+
+      <Modal opened={editingOrder !== null} onClose={() => setEditingOrder(null)} title="未約定注文を修正">
+        <Stack gap="sm">
+          <Text size="sm" c="dimmed">{editingOrder?.ticker} {editingOrder?.side}</Text>
+          <NumberInput label="注文価格" value={editPrice} onChange={setEditPrice} min={0.0001} decimalScale={4} />
+          <NumberInput label="数量" value={editQty} onChange={setEditQty} min={0.0001} decimalScale={4} />
+          {orderActionError && <Alert color="red">{orderActionError}</Alert>}
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => setEditingOrder(null)}>閉じる</Button>
+            <Button onClick={modifyOrder}>変更を送信</Button>
+          </Group>
+        </Stack>
+      </Modal>
 
       {/* Stock Screener (Unusual Activity) */}
       <Card withBorder>
