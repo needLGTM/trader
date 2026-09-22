@@ -42,6 +42,7 @@ type OrderRow = {
   id: number;
   broker: string;
   broker_env: string;
+  signal_id: number | null;
   ticker: string;
   side: string;
   qty: number;
@@ -171,6 +172,16 @@ export function SignalsPage() {
     });
   }, [signals, query, typeFilter]);
 
+  const ordersBySignal = useMemo(() => {
+    const map = new Map<number, OrderRow>();
+    for (const order of orders) {
+      if (order.signal_id != null && !map.has(order.signal_id)) {
+        map.set(order.signal_id, order);
+      }
+    }
+    return map;
+  }, [orders]);
+
   const entryCount = useMemo(
     () => signals.filter((s) => (s.signal_type ?? "").toUpperCase() === "ENTRY").length,
     [signals]
@@ -239,9 +250,12 @@ export function SignalsPage() {
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Time</Table.Th>
+                <Table.Th>Alert</Table.Th>
                 <Table.Th>Type</Table.Th>
                 <Table.Th>Ticker</Table.Th>
                 <Table.Th>Side</Table.Th>
+                <Table.Th>Order status</Table.Th>
+                <Table.Th>Reason</Table.Th>
                 <Table.Th style={{ textAlign: "right" }}>Entry</Table.Th>
                 <Table.Th style={{ textAlign: "right" }}>Stop</Table.Th>
                 <Table.Th style={{ textAlign: "right" }}>Target</Table.Th>
@@ -249,24 +263,35 @@ export function SignalsPage() {
             </Table.Thead>
             <Table.Tbody>
               {filtered.slice(0, 100).map((s) => (
-                <Table.Tr key={s.id}>
+                (() => {
+                  const order = ordersBySignal.get(s.id);
+                  return (
+                  <Table.Tr key={s.id}>
                   <Table.Td style={{ whiteSpace: "nowrap", fontSize: 12 }}>
                     {new Date(s.created_at).toLocaleString("ja-JP")}
+                  </Table.Td>
+                  <Table.Td>
+                    {s.alert_type ? (
+                      <Badge size="sm" variant="light"
+                        color={s.alert_type === "オプション" ? "violet" : s.alert_type === "スイング" ? "blue" : "orange"}>
+                        {s.alert_type}
+                      </Badge>
+                    ) : <Text size="xs" c="dimmed">—</Text>}
                   </Table.Td>
                   <Table.Td><SignalTypeBadge type={s.signal_type} /></Table.Td>
                   <Table.Td>
                     <Group gap={4} wrap="nowrap">
                       <Text fw={700} size="sm">{s.ticker}</Text>
-                      {s.alert_type && (
-                        <Badge size="xs" variant="light"
-                          color={s.alert_type === "オプション" ? "violet" : s.alert_type === "スイング" ? "blue" : "orange"}>
-                          {s.alert_type}
-                        </Badge>
-                      )}
                     </Group>
                     {s.timeframe && <Text size="xs" c="dimmed">{s.timeframe}</Text>}
                   </Table.Td>
                   <Table.Td><SideBadge side={s.side} /></Table.Td>
+                  <Table.Td>
+                    {order ? <StatusBadge status={order.status} /> : <Text size="xs" c="dimmed">注文なし</Text>}
+                  </Table.Td>
+                  <Table.Td style={{ fontSize: 11, color: "var(--mantine-color-dimmed)", maxWidth: 180 }}>
+                    {order?.reason ?? ""}
+                  </Table.Td>
                   <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
                     {s.entry == null ? <Text size="xs" c="dimmed">—</Text> : <Text size="sm" fw={600}>${Number(s.entry).toFixed(2)}</Text>}
                   </Table.Td>
@@ -280,7 +305,9 @@ export function SignalsPage() {
                       return <Text size="sm" c="teal">{ts.map(t => `$${Number(t).toFixed(2)}`).join(" / ")}</Text>;
                     })()}
                   </Table.Td>
-                </Table.Tr>
+                  </Table.Tr>
+                  );
+                })()
               ))}
             </Table.Tbody>
           </Table>

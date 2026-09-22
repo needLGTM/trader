@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionIcon,
   Badge,
@@ -50,6 +50,11 @@ type SnapshotEntry = {
   change_pct: number;
   volume: number;
 };
+
+function asFiniteNumber(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
 
 function PnlText({ value }: { value: number }) {
   const color = value > 0 ? "teal" : value < 0 ? "red" : undefined;
@@ -115,27 +120,42 @@ function StatCard({
 }
 
 export function PerformancePage() {
-  const [env, setEnv] = useState<"SIMULATE" | "REAL">("REAL");
-  const [accType, setAccType] = useState<"ALL" | "MARGIN" | "CASH">("ALL");
+  const [env, setEnv] = useState<"SIMULATE" | "REAL">(() => {
+    const saved = localStorage.getItem("performance.env");
+    return saved === "SIMULATE" || saved === "REAL" ? saved : "REAL";
+  });
+  const [accType, setAccType] = useState<"ALL" | "MARGIN" | "CASH">(() => {
+    const saved = localStorage.getItem("performance.accType");
+    return saved === "ALL" || saved === "MARGIN" || saved === "CASH" ? saved : "ALL";
+  });
   const [pnl, setPnl] = useState<PnlRow[]>([]);
   const [executions, setExecutions] = useState<ExecutionRow[]>([]);
   const [positions, setPositions] = useState<PositionRow[]>([]);
   const [snapshot, setSnapshot] = useState<Record<string, SnapshotEntry>>({});
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestId = useRef(0);
 
-  const fetchSnapshot = async (pos: PositionRow[]) => {
-    if (pos.length === 0) return;
+  const fetchSnapshot = async (pos: PositionRow[], currentRequestId: number) => {
+    if (pos.length === 0) {
+      setSnapshot({});
+      return;
+    }
     const codes = [...new Set(pos.map((p) => p.ticker))].join(",");
     try {
       const res = await fetch(`${API}/market/snapshot?codes=${encodeURIComponent(codes)}`);
-      if (res.ok) setSnapshot((await res.json()) as Record<string, SnapshotEntry>);
+      if (res.ok && requestId.current === currentRequestId) {
+        setSnapshot((await res.json()) as Record<string, SnapshotEntry>);
+      }
     } catch {
       // snapshot is optional; silently ignore
     }
   };
 
   const fetchAll = async (e = env, at = accType) => {
+    const currentRequestId = ++requestId.current;
     setRefreshing(true);
+    setLoadError(null);
     try {
       const accParam = at !== "ALL" ? `&acc_type=${at}` : "";
       const [pnlRes, exRes, posRes] = await Promise.all([
@@ -143,26 +163,36 @@ export function PerformancePage() {
         fetch(`${API}/executions?broker_env=${e}`),
         fetch(`${API}/positions?broker_env=${e}${accParam}`),
       ]);
-      if (pnlRes.ok) setPnl((await pnlRes.json()) as PnlRow[]);
-      if (exRes.ok) setExecutions((await exRes.json()) as ExecutionRow[]);
-      if (posRes.ok) {
+      if (requestId.current !== currentRequestId) return;
+      if (!pnlRes.ok || !exRes.ok || !posRes.ok) {
+        throw new Error(`データ取得に失敗しました (${[pnlRes, exRes, posRes].filter((r) => !r.ok).map((r) => r.status).join(", ")})`);
+      }
+      setPnl((await pnlRes.json()) as PnlRow[]);
+      setExecutions((await exRes.json()) as ExecutionRow[]);
+      if (requestId.current === currentRequestId) {
         const pos = (await posRes.json()) as PositionRow[];
         setPositions(pos);
-        fetchSnapshot(pos);
+        void fetchSnapshot(pos, currentRequestId);
+      }
+    } catch (error) {
+      if (requestId.current === currentRequestId) {
+        setLoadError(error instanceof Error ? error.message : "データ取得に失敗しました");
       }
     } finally {
-      setRefreshing(false);
+      if (requestId.current === currentRequestId) setRefreshing(false);
     }
   };
 
   const handleEnvChange = (v: string) => {
     const next = v as "SIMULATE" | "REAL";
+    localStorage.setItem("performance.env", next);
     setEnv(next);
     fetchAll(next, accType);
   };
 
   const handleAccTypeChange = (v: string) => {
     const next = v as "ALL" | "MARGIN" | "CASH";
+    localStorage.setItem("performance.accType", next);
     setAccType(next);
     fetchAll(env, next);
   };
@@ -184,9 +214,12 @@ export function PerformancePage() {
     return { totalRealized, todayPnl: todayRow?.realized ?? null, tradeCount: executions.length };
   }, [pnl, executions]);
 
-  const sortedPnl = useMemo(() => [...pnl].sort((a, b) => b.date.localeCompare(a.date)), [pnl]);
+  const sortedPnl = useMemo(
+    () => [...pnl].sort((a, b) => String(b.date ?? "").localeCompare(String(a.date ?? ""))),
+    [pnl]
+  );
   const sortedExec = useMemo(
-    () => [...executions].sort((a, b) => b.executed_at.localeCompare(a.executed_at)),
+    () => [...executions].sort((a, b) => String(b.executed_at ?? "").localeCompare(String(a.executed_at ?? ""))),
     [executions]
   );
 
@@ -217,6 +250,12 @@ export function PerformancePage() {
           </Tooltip>
         </Group>
       </Group>
+
+      {loadError && (
+        <Card withBorder>
+          <Text size="sm" c="red">{loadError}</Text>
+        </Card>
+      )}
 
       <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="md">
         <StatCard
@@ -263,13 +302,17 @@ export function PerformancePage() {
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
-                  {sortedPnl.slice(0, 90).map((row) => (
+                  {sortedPnl.slice(0, 90).map((row) => {
+                    const realized = asFiniteNumber(row.realized) ?? 0;
+                    const unrealized = asFiniteNumber(row.unrealized) ?? 0;
+                    return (
                     <Table.Tr key={row.id}>
                       <Table.Td style={{ fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{row.date}</Table.Td>
-                      <Table.Td style={{ textAlign: "right" }}><PnlText value={row.realized} /></Table.Td>
-                      <Table.Td style={{ textAlign: "right" }}><PnlText value={row.unrealized} /></Table.Td>
+                      <Table.Td style={{ textAlign: "right" }}><PnlText value={realized} /></Table.Td>
+                      <Table.Td style={{ textAlign: "right" }}><PnlText value={unrealized} /></Table.Td>
                     </Table.Tr>
-                  ))}
+                    );
+                  })}
                 </Table.Tbody>
               </Table>
             )}
@@ -311,27 +354,31 @@ export function PerformancePage() {
                 <Table.Tbody>
                   {positions.map((p) => {
                     const snap = snapshot[p.ticker];
-                    const unrealized = snap ? (snap.last_price - p.avg_price) * p.qty : null;
+                    const qty = asFiniteNumber(p.qty) ?? 0;
+                    const avgPrice = asFiniteNumber(p.avg_price);
+                    const lastPrice = snap ? asFiniteNumber(snap.last_price) : null;
+                    const changePct = snap ? asFiniteNumber(snap.change_pct) : null;
+                    const unrealized = lastPrice != null && avgPrice != null ? (lastPrice - avgPrice) * qty : null;
                     return (
                       <Table.Tr key={p.id}>
                         <Table.Td>
                           <Text fw={700} size="sm">{p.ticker}</Text>
-                          {snap && (
-                            <Text size="xs" c={snap.change_pct >= 0 ? "teal" : "red"}>
-                              {snap.change_pct >= 0 ? "+" : ""}{snap.change_pct.toFixed(2)}%
+                          {changePct != null && (
+                            <Text size="xs" c={changePct >= 0 ? "teal" : "red"}>
+                              {changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%
                             </Text>
                           )}
                         </Table.Td>
                         <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
-                          <Text size="sm" c={p.qty > 0 ? "teal" : "red"} fw={600}>
-                            {p.qty > 0 ? `+${p.qty}` : p.qty}
+                          <Text size="sm" c={qty > 0 ? "teal" : "red"} fw={600}>
+                            {qty > 0 ? `+${qty}` : qty}
                           </Text>
                         </Table.Td>
                         <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
-                          {p.avg_price.toFixed(2)}
+                          {avgPrice == null ? <Text size="xs" c="dimmed">—</Text> : avgPrice.toFixed(2)}
                         </Table.Td>
                         <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
-                          {snap ? snap.last_price.toFixed(2) : <Text size="xs" c="dimmed">—</Text>}
+                          {lastPrice == null ? <Text size="xs" c="dimmed">—</Text> : lastPrice.toFixed(2)}
                         </Table.Td>
                         <Table.Td style={{ textAlign: "right" }}>
                           {unrealized != null ? <PnlText value={unrealized} /> : <Text size="xs" c="dimmed">—</Text>}
