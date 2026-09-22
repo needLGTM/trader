@@ -734,6 +734,7 @@ def receive_signal(payload: SignalIn):
     _notify_original_entry: float | None = None
     _auto_trade_blocked_reason: str | None = None
     is_option_signal = signal.alert_type == "オプション"
+    fill_outside_rth = signal.alert_type == "デイトレ"
     _notify_exit_fraction: float | None = (
         _parse_exit_fraction(payload.text) if parsed.side.upper() == "SELL" else None
     )
@@ -801,6 +802,7 @@ def receive_signal(payload: SignalIn):
                             price=None,
                             order_type="MARKET",
                             tif="DAY",
+                            fill_outside_rth=fill_outside_rth,
                             acc_type=_broker_acc_type,
                             signal_id=signal.id,
                         )
@@ -915,6 +917,7 @@ def receive_signal(payload: SignalIn):
                         price=limit_price,
                         order_type=order_type,
                         tif=tif,
+                        fill_outside_rth=fill_outside_rth,
                         acc_type=_broker_acc_type,
                         signal_id=signal.id,
                     )

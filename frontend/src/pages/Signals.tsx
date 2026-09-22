@@ -76,8 +76,10 @@ function SignalTypeBadge({ type }: { type: string | null }) {
 
 function StatusBadge({ status }: { status: string }) {
   const s = status.toLowerCase();
-  const color = s === "filled" ? "teal" : s === "canceled" ? "gray" : s === "rejected" ? "red" : s === "skipped" ? "orange" : "blue";
-  return <Badge color={color} variant="light" size="sm">{status}</Badge>;
+  const pending = ["pending", "executing", "new", "submitted", "partially_filled"].includes(s);
+  const color = s === "filled" ? "teal" : s === "canceled" || s === "partially_canceled" ? "gray" : s === "rejected" || s === "unknown" ? "red" : s === "skipped" ? "orange" : pending ? "yellow" : "blue";
+  const label = pending ? "未約定" : status;
+  return <Badge color={color} variant="light" size="sm">{label}</Badge>;
 }
 
 function EnvBadge({ env }: { env: string }) {

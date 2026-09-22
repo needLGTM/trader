@@ -34,6 +34,9 @@ type ExecutionRow = {
   qty: number;
   price: number;
   executed_at: string;
+  execution_type: string;
+  matched_execution_ids: string | null;
+  realized_pnl: number | null;
 };
 
 type PositionRow = {
@@ -75,6 +78,11 @@ function SideBadge({ side }: { side: string }) {
   const s = side.toLowerCase();
   const color = s.includes("buy") ? "teal" : s.includes("sell") ? "red" : "gray";
   return <Badge color={color} variant="light" size="sm">{side}</Badge>;
+}
+
+function ExecutionTypeBadge({ type }: { type: string }) {
+  const label = type === "EXIT" ? "EXIT" : type === "ENTRY_AND_EXIT" ? "ENTRY/EXIT" : "ENTRY";
+  return <Badge color={type === "EXIT" ? "grape" : "blue"} variant="light" size="sm">{label}</Badge>;
 }
 
 function StatCard({
@@ -414,8 +422,10 @@ export function PerformancePage() {
                 <Table.Th>Time</Table.Th>
                 <Table.Th>Ticker</Table.Th>
                 <Table.Th>Side</Table.Th>
+                <Table.Th>Match</Table.Th>
                 <Table.Th style={{ textAlign: "right" }}>Qty</Table.Th>
                 <Table.Th style={{ textAlign: "right" }}>Price</Table.Th>
+                <Table.Th style={{ textAlign: "right" }}>Realized</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -426,9 +436,18 @@ export function PerformancePage() {
                   </Table.Td>
                   <Table.Td><Text fw={700} size="sm">{ex.ticker}</Text></Table.Td>
                   <Table.Td><SideBadge side={ex.side} /></Table.Td>
+                  <Table.Td>
+                    <ExecutionTypeBadge type={ex.execution_type ?? "ENTRY"} />
+                    {ex.matched_execution_ids && (
+                      <Text size="xs" c="dimmed">← #{JSON.parse(ex.matched_execution_ids).join(", #")}</Text>
+                    )}
+                  </Table.Td>
                   <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>{ex.qty}</Table.Td>
                   <Table.Td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
                     {ex.price.toFixed(2)}
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: "right" }}>
+                    {ex.realized_pnl == null ? <Text size="xs" c="dimmed">—</Text> : <PnlText value={ex.realized_pnl} />}
                   </Table.Td>
                 </Table.Tr>
               ))}

@@ -31,11 +31,12 @@ class Order(SQLModel, table=True):
     side: str # BUY/SELL
     qty: float
     price: float | None = None
-    status: str = "PENDING" # PENDING/EXECUTING/SUBMITTED/FILLED/UNKNOWN/CANCELED/REJECTED
+    status: str = "PENDING" # PENDING/EXECUTING/NEW/PARTIALLY_FILLED/FILLED/UNKNOWN/CANCELED/REJECTED
     reason: str | None = None
     signal_id: int | None = None
     order_type: str = "LIMIT"
     tif: str = "DAY"
+    fill_outside_rth: bool = False
     acc_type: str | None = None
     attempts: int = 0
     submitted_at: datetime | None = None
@@ -71,6 +72,9 @@ class Execution(SQLModel, table=True):
     qty: float
     price: float
     broker_env: str = Field(default="SIMULATE")
+    execution_type: str = Field(default="ENTRY")
+    matched_execution_ids: str | None = None
+    realized_pnl: float | None = None
     executed_at: datetime = Field(default_factory=datetime.utcnow)
 
 

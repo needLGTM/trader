@@ -97,11 +97,15 @@ services:
     environment:
       PYTHONPATH: /app/src
       TZ: Asia/Tokyo
+      MOOMOO_OPEND_HOST: ${MOOMOO_OPEND_HOST:-backend}
+      MOOMOO_OPEND_PORT: ${MOOMOO_OPEND_PORT:-11111}
+      MOOMOO_RSA_PRIVATE_KEY_PATH: ${MOOMOO_RSA_PRIVATE_KEY_PATH:-/app/opend_keys/conn_key.pem}
     depends_on:
       backend:
         condition: service_healthy
     volumes:
       - backend_data:/app/data
+      - ./opend_keys:/app/opend_keys:ro
     command: ["python", "-m", "workers.order_executor"]
 
   # ── moomoo プロファイル（OpenD ゲートウェイ）─────────────

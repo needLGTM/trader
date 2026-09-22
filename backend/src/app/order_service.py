@@ -22,7 +22,8 @@ def enqueue_order(
     price: float | None,
     order_type: str,
     tif: str,
-    acc_type: str | None,
+    fill_outside_rth: bool = False,
+    acc_type: str | None = None,
     signal_id: int,
 ) -> dict | None:
     """Persist an order intent; the executor worker performs the external call."""
@@ -38,6 +39,7 @@ def enqueue_order(
             signal_id=signal_id,
             order_type=order_type,
             tif=tif,
+            fill_outside_rth=fill_outside_rth,
             acc_type=acc_type,
         )
         session.add(order)
@@ -79,6 +81,7 @@ def execute_pending_orders() -> int:
                     price=candidate.price,
                     order_type=candidate.order_type,
                     tif=candidate.tif,
+                    fill_outside_rth=candidate.fill_outside_rth,
                     acc_type=candidate.acc_type,
                 )
                 candidate.order_id = result.get("order_id")

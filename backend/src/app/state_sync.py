@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta
 import logging
+import json
 from typing import Any
 
 from sqlmodel import Session, delete, select
@@ -129,7 +130,47 @@ def sync_executions(session: Session) -> list[Execution]:
         log.warning("moomoo history_deals import failed: %s", exc)
 
     session.commit()
+    _rebuild_execution_pairings(session)
+    session.commit()
     return session.exec(select(Execution).order_by(Execution.executed_at.desc())).all()
+
+
+def _rebuild_execution_pairings(session: Session) -> None:
+    """Match exits to earlier entries using FIFO lots per ticker and environment."""
+    rows = session.exec(select(Execution).order_by(Execution.executed_at.asc(), Execution.id.asc())).all()
+    groups: dict[tuple[str, str], list[Execution]] = defaultdict(list)
+    for row in rows:
+        groups[(row.broker_env, row.ticker)].append(row)
+
+    for executions in groups.values():
+        long_lots: list[dict[str, Any]] = []
+        short_lots: list[dict[str, Any]] = []
+        for execution in executions:
+            execution.execution_type = "ENTRY"
+            execution.matched_execution_ids = None
+            execution.realized_pnl = None
+            remaining = float(execution.qty)
+            matched_ids: list[int] = []
+            realized = 0.0
+            side = execution.side.upper()
+            opposite_lots = short_lots if side == "BUY" else long_lots
+            own_lots = long_lots if side == "BUY" else short_lots
+            while remaining > 0 and opposite_lots:
+                lot = opposite_lots[0]
+                closed = min(remaining, lot["qty"])
+                realized += (float(execution.price) - lot["price"]) * closed * (1 if side == "SELL" else -1)
+                remaining -= closed
+                lot["qty"] -= closed
+                if lot["id"] is not None:
+                    matched_ids.append(lot["id"])
+                if lot["qty"] <= 0:
+                    opposite_lots.pop(0)
+            if matched_ids:
+                execution.execution_type = "EXIT" if remaining <= 0 else "ENTRY_AND_EXIT"
+                execution.matched_execution_ids = json.dumps(matched_ids)
+                execution.realized_pnl = realized
+            if remaining > 0:
+                own_lots.append({"id": execution.id, "qty": remaining, "price": float(execution.price)})
 
 
 def sync_positions(session: Session, broker_name: str | None = None, broker_env: str | None = None) -> list[Position]:

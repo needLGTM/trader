@@ -17,6 +17,7 @@ class PaperBroker(Broker):
         price: Optional[float] = None,
         order_type: str = "LIMIT",
         tif: str = "DAY",
+        fill_outside_rth: bool = False,
         acc_type: Optional[str] = None,
     ) -> dict:
         # 約定=即時、価格は直近値の代わりに指定/ダミー（1.0）
