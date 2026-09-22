@@ -733,12 +733,21 @@ def receive_signal(payload: SignalIn):
     _notify_delta: float | None = None
     _notify_original_entry: float | None = None
     _auto_trade_blocked_reason: str | None = None
+    is_option_signal = signal.alert_type == "オプション"
     _notify_exit_fraction: float | None = (
         _parse_exit_fraction(payload.text) if parsed.side.upper() == "SELL" else None
     )
 
     if not source_auto_trade_enabled:
         _auto_trade_blocked_reason = "auto_trade=OFF"
+    elif is_option_signal:
+        _auto_trade_blocked_reason = "オプション専用処理待ち"
+        logger.info(
+            "option signal held without stock order signal_id=%s ticker=%s side=%s",
+            signal.id,
+            parsed.ticker,
+            parsed.side,
+        )
     elif parsed.side.upper() == "INFO":
         _auto_trade_blocked_reason = "extraction failed"
         # INFO でも逆指値引き上げなら price reminder だけ更新する
@@ -756,7 +765,7 @@ def receive_signal(payload: SignalIn):
                 except Exception as sl_exc:
                     logger.warning("SL update (INFO path) failed: %s", sl_exc)
 
-    if source_auto_trade_enabled and parsed.side.upper() != "INFO":
+    if source_auto_trade_enabled and not is_option_signal and parsed.side.upper() != "INFO":
         try:
             broker = get_broker(broker_env=broker_env)
             _broker_acc_type = acc_type if broker_env == "REAL" else None
